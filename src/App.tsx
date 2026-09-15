@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
-import { StoreProvider, useStore } from "@/state/store";
+import { StoreProvider, api, useStore } from "@/state/store";
 import { WelcomeFlow } from "@/components/onboarding/WelcomeFlow";
 import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
 import { GuidedTour } from "@/components/onboarding/GuidedTour";
 import { welcomeDue } from "@/lib/onboarding";
+import { provisionOnboardingDefaultRoom, shouldProvisionDefaultRoom } from "@/lib/onboarding-default-room";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
@@ -382,8 +383,17 @@ function WelcomeGate() {
       onDone={() => {
         setDismissed(true);
         dispatch({ type: "toggleWelcome", open: false });
-        // the first real finish hands over to the guided tour; a replay does not
-        if (!replay) dispatch({ type: "toggleTour", open: true });
+        // the first real finish hands over to the guided tour and provisions
+        // its server-owned room; replay remains instructional only.
+        if (shouldProvisionDefaultRoom(replay)) {
+          dispatch({ type: "toggleTour", open: true });
+          void provisionOnboardingDefaultRoom(
+            () => api("/api/rooms/default", { method: "POST" }),
+            dispatch,
+          ).catch(() => {
+            // Provisioning cannot block or undo the completed/skipped welcome flow.
+          });
+        }
       }}
     />
   );

@@ -18,6 +18,10 @@ describe("roomActivityVisible", () => {
     expect(roomActivityVisible(chip({}), true)).toBe(true);
   });
 
+  it("always shows a system room lifecycle receipt", () => {
+    expect(roomActivityVisible(chip({ tool: { name: "Market Scout joined #Channel 1 from OKX.ai (mock).", ok: true, system: true } }), false)).toBe(true);
+  });
+
   it("always shows a failure", () => {
     expect(roomActivityVisible(chip({ tool: { name: "Ran a command", ok: false } }), false)).toBe(true);
     expect(roomActivityVisible(chip({ tool: { name: "error: engine missing" } }), false)).toBe(true);

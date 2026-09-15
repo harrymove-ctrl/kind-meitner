@@ -150,7 +150,7 @@ export interface Message {
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying.
    * `summary` is the call's input on one redacted line (the shell command). */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; summary?: string; input?: string; output?: string };
+  tool?: { name: string; ok?: boolean; /** A room lifecycle receipt, not a hidden ordinary tool step. */ system?: boolean; spoken?: string; setup?: boolean; summary?: string; input?: string; output?: string };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
   /** a user message that arrived through the server's API, not typed here */
@@ -304,6 +304,13 @@ export interface TaskUsage {
   turns: number;
 }
 
+export interface OkxImportMetadata {
+  kind: "okx-mock";
+  externalAgentId: string;
+  provider: "OKX.ai";
+  capabilities: Array<"chat" | "market-intelligence">;
+}
+
 export interface Bot {
   id: string;
   threadId: string;
@@ -352,6 +359,8 @@ export interface Bot {
   voice?: string;
   pinned?: boolean;
   hidden?: boolean;
+  /** Provenance for a local mock agent imported through the OKX catalog. */
+  okxImport?: OkxImportMetadata;
   /** Sidebar section this bot renders under; absent = unsectioned. */
   section?: string;
   /** the one message pinned to the top of this bot's active thread */
