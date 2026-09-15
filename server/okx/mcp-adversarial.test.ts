@@ -41,7 +41,7 @@ describe("A2MCP Tool Server (/api/okx/mcp) HTTP Integration Stress Harness", () 
   const validSignature = "0x" + "bb".repeat(65); // 130 hex chars + 0x = 132 chars
 
   beforeAll(async () => {
-    fixture = await launchVerificationServer();
+    fixture = await launchVerificationServer({ OKX_LEGACY_EIP3009_ENABLED: "true" });
     baseUrl = fixture.info.url;
   }, 30_000);
 

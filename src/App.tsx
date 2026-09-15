@@ -29,6 +29,7 @@ import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
 import { TeamMapPage } from "@/components/TeamMapPage";
 import { BloombergView, EvaluatorView, OkxSettingsModal } from "./okx";
+import { saveOkxSettings } from "./okx/okx-settings-api";
 import { setLocale } from "@/lib/i18n";
 import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 
@@ -325,11 +326,7 @@ function Shell() {
           open={state.okxSettingsOpen}
           onClose={() => dispatch({ type: "toggleOkxSettings", open: false })}
           onSave={async (settings) => {
-            await fetch("/api/okx/settings", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(settings),
-            }).catch(() => {});
+            await saveOkxSettings(settings);
           }}
         />
       )}

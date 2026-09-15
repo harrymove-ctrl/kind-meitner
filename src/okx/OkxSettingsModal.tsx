@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Key,
   Shield,
   Wallet,
   Check,
@@ -10,16 +9,21 @@ import {
 import { cn } from "@/lib/cn";
 
 export interface OkxSettingsData {
-  apiKey: string;
-  secretKey: string;
-  passphrase: string;
-  webhookSecret: string;
-  baseUrl: string;
   treasuryBalance: number;
   maxPerRunSpend: number;
   monthlyBudgetCap: number;
-  walletAddress?: string;
   token?: string;
+}
+
+/** Payload accepted by the runtime settings endpoint. Credentials are
+ * deliberately absent: Railway service variables are the only secret source. */
+export function buildOkxSettingsPayload(settings: OkxSettingsData): OkxSettingsData {
+  return {
+    treasuryBalance: Number(settings.treasuryBalance),
+    maxPerRunSpend: Number(settings.maxPerRunSpend),
+    monthlyBudgetCap: Number(settings.monthlyBudgetCap),
+    ...(settings.token ? { token: settings.token } : {}),
+  };
 }
 
 export interface OkxSettingsModalProps {
@@ -37,11 +41,6 @@ export function OkxSettingsModal({
   onSave,
   className,
 }: OkxSettingsModalProps) {
-  const [apiKey, setApiKey] = useState(initialSettings?.apiKey ?? "");
-  const [secretKey, setSecretKey] = useState(initialSettings?.secretKey ?? "");
-  const [passphrase, setPassphrase] = useState(initialSettings?.passphrase ?? "");
-  const [webhookSecret, setWebhookSecret] = useState(initialSettings?.webhookSecret ?? "");
-  const [baseUrl, setBaseUrl] = useState(initialSettings?.baseUrl ?? "https://web3.okx.com");
   const [treasuryBalance, setTreasuryBalance] = useState(initialSettings?.treasuryBalance ?? 200);
   const [maxPerRunSpend, setMaxPerRunSpend] = useState(initialSettings?.maxPerRunSpend ?? 50);
   const [monthlyBudgetCap, setMonthlyBudgetCap] = useState(initialSettings?.monthlyBudgetCap ?? 500);
@@ -69,17 +68,12 @@ export function OkxSettingsModal({
 
     setSaving(true);
     try {
-      await onSave({
-        apiKey: apiKey.trim(),
-        secretKey: secretKey.trim(),
-        passphrase: passphrase.trim(),
-        webhookSecret: webhookSecret.trim(),
-        baseUrl: baseUrl.trim(),
-        treasuryBalance: Number(treasuryBalance),
-        maxPerRunSpend: Number(maxPerRunSpend),
-        monthlyBudgetCap: Number(monthlyBudgetCap),
+      await onSave(buildOkxSettingsPayload({
+        treasuryBalance,
+        maxPerRunSpend,
+        monthlyBudgetCap,
         token,
-      });
+      }));
       setSavedSuccess(true);
       setTimeout(() => {
         setSavedSuccess(false);
@@ -123,73 +117,16 @@ export function OkxSettingsModal({
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {/* Section 1: Developer Portal API Authentication */}
-          <div className="space-y-3">
-            <div className="font-semibold uppercase text-[10px] tracking-wider text-ink-secondary flex items-center gap-1.5">
-              <Key size={12} />
+          {/* Server-only credential boundary */}
+          <div className="rounded-lg border border-hairline/40 bg-raised/40 p-3 text-[11px] leading-relaxed text-ink-secondary">
+            <div className="mb-1 font-semibold uppercase tracking-wider text-[10px] text-ink-secondary">
               Developer Portal Credentials
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-ink-secondary font-medium">API Key (OK-ACCESS-KEY)</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 9b7a...-d12f"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className="w-full rounded-md border border-hairline/50 bg-inset px-3 py-1.5 font-mono text-xs focus:border-accent focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-ink-secondary font-medium">Passphrase</label>
-                <input
-                  type="password"
-                  placeholder="Portal passphrase"
-                  value={passphrase}
-                  onChange={(e) => setPassphrase(e.target.value)}
-                  className="w-full rounded-md border border-hairline/50 bg-inset px-3 py-1.5 font-mono text-xs focus:border-accent focus:outline-none"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-ink-secondary font-medium">Secret Key (HMAC-SHA256 Signing)</label>
-              <input
-                type="password"
-                placeholder="Developer portal secret key"
-                value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                className="w-full rounded-md border border-hairline/50 bg-inset px-3 py-1.5 font-mono text-xs focus:border-accent focus:outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-ink-secondary font-medium">Webhook Ingress Secret</label>
-                <input
-                  type="password"
-                  placeholder="Webhook secret token"
-                  value={webhookSecret}
-                  onChange={(e) => setWebhookSecret(e.target.value)}
-                  className="w-full rounded-md border border-hairline/50 bg-inset px-3 py-1.5 font-mono text-xs focus:border-accent focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-ink-secondary font-medium">Base URL</label>
-                <input
-                  type="text"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  className="w-full rounded-md border border-hairline/50 bg-inset px-3 py-1.5 font-mono text-xs focus:border-accent focus:outline-none"
-                />
-              </div>
-            </div>
+            API keys, passphrases, webhook secrets, recipient addresses, and payment configuration are server-only.
+            Configure reviewed values as Railway service-scoped sealed variables; this browser never reads, stores, or submits them.
           </div>
 
-          {/* Section 2: Autonomous Treasury & Spend Caps */}
+          {/* Autonomous Treasury & Spend Caps */}
           <div className="space-y-3 pt-2 border-t border-hairline/30">
             <div className="font-semibold uppercase text-[10px] tracking-wider text-ink-secondary flex items-center gap-1.5">
               <Wallet size={12} />

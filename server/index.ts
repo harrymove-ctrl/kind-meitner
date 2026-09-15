@@ -6075,8 +6075,17 @@ const commsBus: CommsBus = { store, broadcast, threadSlotFree: (botId) => !botAt
 _loadPending();
 
 const okxWebhookJournal = new OkxWebhookJournal(join(DATA_DIR, "okx-webhook-journal.json"));
+function okxCredentialsFromEnvironment() {
+  const apiKey = process.env.OKX_API_KEY?.trim();
+  const secretKey = process.env.OKX_SECRET_KEY?.trim();
+  const passphrase = process.env.OKX_PASSPHRASE?.trim();
+  if (!apiKey || !secretKey || !passphrase) return undefined;
+  const baseUrl = process.env.OKX_API_BASE_URL?.trim();
+  return { apiKey, secretKey, passphrase, ...(baseUrl ? { baseUrl } : {}) };
+}
 const okxGateway = new OkxGateway({
   ledgerFile: join(DATA_DIR, "okx-tasks.json"),
+  credentials: okxCredentialsFromEnvironment(),
   webhookSecret: process.env.OKX_WEBHOOK_SECRET,
 });
 const okxTreasury = new OkxTreasuryManager({
@@ -6097,6 +6106,7 @@ const okxEvaluator = new OkxDisputeEvaluator({
   storageFile: join(DATA_DIR, "okx-evaluator.json"),
 });
 const okxMcpRateLimits = new Map<string, number[]>();
+const legacyEip3009PaidMcpEnabled = process.env.OKX_LEGACY_EIP3009_ENABLED === "true";
 function checkOkxMcpRateLimit(caller: string, limit = 60, windowMs = 60_000): { allowed: boolean; retryAfter: number } {
   const now = Date.now();
   const timestamps = (okxMcpRateLimits.get(caller) ?? []).filter((t) => now - t < windowMs);
@@ -9788,13 +9798,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, status, { error: message });
       }
     }
-    // Pre-Auth A2MCP Tool Server Ingress (EIP-3009 Gasless Micro-Payments & Zero-Slow-UX Tracing)
+    // Legacy custom EIP-3009 access is intentionally off unless a test or a
+    // separately reviewed migration explicitly enables it. It is not x402
+    // settlement and must never be the public paid-service default.
     if (method === "POST" && path === "/api/okx/mcp") {
       const startTime = Date.now();
       const connectId =
         (req.headers["x-connect-id"] as string) ||
         randomUUID();
       res.setHeader("x-connect-id", connectId);
+      if (!legacyEip3009PaidMcpEnabled) {
+        res.setHeader("x-time-to-session", String(Date.now() - startTime));
+        return json(res, 410, {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32004,
+            message: "Legacy EIP-3009 paid MCP is disabled. Use /api/okx/free-mcp; x402 testnet support is a separate reviewed feature.",
+          },
+        });
+      }
 
       const callerKey = (req.headers["x-payment-from"] as string) || (req.socket?.remoteAddress ?? "unknown");
       const rateCheck = checkOkxMcpRateLimit(callerKey);
@@ -15644,16 +15667,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (method === "POST" && path === "/api/okx/settings") {
       const body = await readBody(req, 16384);
       if (body && typeof body === "object") {
-        if (body.apiKey && body.secretKey && body.passphrase) {
-          (okxGateway as any).credentials = {
-            apiKey: String(body.apiKey),
-            secretKey: String(body.secretKey),
-            passphrase: String(body.passphrase),
-            baseUrl: body.baseUrl ? String(body.baseUrl) : undefined,
-          };
-        }
-        if (body.webhookSecret) {
-          (okxGateway as any).webhookSecret = String(body.webhookSecret);
+        const secretFields = ["apiKey", "secretKey", "passphrase", "webhookSecret", "baseUrl"]
+          .filter((field) => Object.prototype.hasOwnProperty.call(body, field));
+        if (secretFields.length) {
+          return json(res, 400, {
+            error: `OKX credentials are server-only and cannot be set at runtime (${secretFields.join(", ")}). Configure Railway service-scoped variables instead.`,
+          });
         }
         if (typeof body.treasuryBalance === "number") {
           okxTreasury.deposit(body.treasuryBalance);
@@ -15666,9 +15685,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (method === "GET" && path === "/api/okx/settings") {
       const creds = okxGateway.credentials;
       return json(res, 200, {
-        apiKey: creds?.apiKey ?? "",
-        baseUrl: creds?.baseUrl ?? "https://web3.okx.com",
-        webhookSecret: (okxGateway as any).webhookSecret ?? "",
+        credentialsConfigured: Boolean(creds?.apiKey && creds.secretKey && creds.passphrase),
+        webhookSecretConfigured: Boolean((okxGateway as any).webhookSecret),
         treasuryBalance: okxTreasury.getBalance(),
         maxPerRunSpend: okxTreasury.getMaxPerRunSpend(),
         monthlyBudgetCap: okxTreasury.getMonthlyBudgetCap(),

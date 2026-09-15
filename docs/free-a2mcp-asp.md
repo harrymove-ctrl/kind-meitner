@@ -22,6 +22,12 @@ The service returns a direct `HTTP 200` JSON-RPC result for valid free calls. A 
 
 Payment-looking headers are deliberately ignored. The endpoint must never emit a `402 Payment Required` challenge, consume a nonce, record a payment, or invoke a signer.
 
+## Server-only configuration and legacy paid-path status
+
+The legacy custom EIP-3009 endpoint at `POST /api/okx/mcp` is disabled by default and returns `410 Gone`. It is not x402 and must not be registered or advertised as a paid or settled service. A test-only/reviewed migration can enable it explicitly with `OKX_LEGACY_EIP3009_ENABLED=true`; production must leave this variable unset or false.
+
+If a future reviewed server-side OKX integration needs credentials, configure them as **Railway service-scoped sealed variables**: `OKX_API_KEY`, `OKX_SECRET_KEY`, `OKX_PASSPHRASE`, optional `OKX_API_BASE_URL`, and `OKX_WEBHOOK_SECRET`. These values are read only during server startup. The runtime settings API rejects them, and its read response exposes only `credentialsConfigured` and `webhookSecretConfigured` booleans. Never commit, log, place in the browser, or enter them through the UI.
+
 ## Available read-only tools
 
 All listed tools include MCP annotations declaring `readOnlyHint: true`, `destructiveHint: false`, and `openWorldHint: false`.

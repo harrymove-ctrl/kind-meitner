@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { BloombergView, type AspItem, type CategoryMetric } from "./BloombergView";
 import { EvaluatorView, type DisputeCardData } from "./EvaluatorView";
-import { OkxSettingsModal } from "./OkxSettingsModal";
+import { OkxSettingsModal, buildOkxSettingsPayload } from "./OkxSettingsModal";
 
 const mockAsps: AspItem[] = [
   {
@@ -273,45 +273,35 @@ describe("OKX UI Components", () => {
       expect(html).toBe("");
     });
 
-    it("renders form fields, spend limit inputs, and handles open state", () => {
-      const initialSettings = {
-        apiKey: "test-api-key-xyz",
-        secretKey: "test-secret-key-abc",
-        passphrase: "test-passphrase-123",
-        webhookSecret: "test-webhook-secret-456",
-        baseUrl: "https://web3.okx.com",
-        treasuryBalance: 300,
-        maxPerRunSpend: 75,
-        monthlyBudgetCap: 750,
-        token: "USDT",
-      };
-
+    it("renders only server-only credential guidance and spend limit inputs", () => {
       const html = renderToStaticMarkup(
         createElement(OkxSettingsModal, {
           open: true,
           onClose: vi.fn(),
           onSave: vi.fn(),
-          initialSettings,
+          initialSettings: {
+            treasuryBalance: 300,
+            maxPerRunSpend: 75,
+            monthlyBudgetCap: 750,
+            token: "USDT",
+          },
         }),
       );
 
-      // Modal title and layout
       expect(html).toContain("OKX Onchain OS Gateway Settings");
-
-      // Developer portal credentials fields
       expect(html).toContain("Developer Portal Credentials");
-      expect(html).toContain("API Key (OK-ACCESS-KEY)");
-      expect(html).toContain("value=\"test-api-key-xyz\"");
-      expect(html).toContain("Passphrase");
-      expect(html).toContain("value=\"test-passphrase-123\"");
-      expect(html).toContain("Secret Key (HMAC-SHA256 Signing)");
-      expect(html).toContain("value=\"test-secret-key-abc\"");
-      expect(html).toContain("Webhook Ingress Secret");
-      expect(html).toContain("value=\"test-webhook-secret-456\"");
-      expect(html).toContain("Base URL");
-      expect(html).toContain("value=\"https://web3.okx.com\"");
+      expect(html).toContain("server-only");
+      expect(html).toContain("Railway service-scoped sealed variables");
+      for (const secretLabel of [
+        "API Key (OK-ACCESS-KEY)",
+        "Passphrase",
+        "Secret Key (HMAC-SHA256 Signing)",
+        "Webhook Ingress Secret",
+        "Base URL",
+      ]) {
+        expect(html).not.toContain(secretLabel);
+      }
 
-      // Treasury & Budget limit fields
       expect(html).toContain("Autonomous Treasury &amp; Budget Limits");
       expect(html).toContain("Wallet Balance (USDT)");
       expect(html).toContain("value=\"300\"");
@@ -319,10 +309,24 @@ describe("OKX UI Components", () => {
       expect(html).toContain("value=\"75\"");
       expect(html).toContain("Monthly Cap (USDT)");
       expect(html).toContain("value=\"750\"");
+    });
 
-      // Buttons
-      expect(html).toContain("Cancel");
-      expect(html).toContain("Save Configuration");
+    it("builds a settings payload without credential fields", () => {
+      const payload = buildOkxSettingsPayload({
+        treasuryBalance: 300,
+        maxPerRunSpend: 75,
+        monthlyBudgetCap: 750,
+        token: "USDT",
+      });
+      expect(payload).toEqual({
+        treasuryBalance: 300,
+        maxPerRunSpend: 75,
+        monthlyBudgetCap: 750,
+        token: "USDT",
+      });
+      for (const key of ["apiKey", "secretKey", "passphrase", "webhookSecret", "baseUrl"]) {
+        expect(payload).not.toHaveProperty(key);
+      }
     });
   });
 });

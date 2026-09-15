@@ -419,6 +419,23 @@ export async function launchVerificationServer(
     // FAKE_CLAUDE_DUMP stays the launcher's: assertions read fixtureDumpPath.
     if (key.startsWith("FAKE_CLAUDE_") && key !== "FAKE_CLAUDE_DUMP" && value) childEnv[key] = value;
   }
+  // Only explicitly named fixture values cross into the owned server. This
+  // lets tests prove server-only configuration/readback behavior without ever
+  // inheriting a developer's real OKX credentials from the parent shell.
+  const okxFixtureEnv: Array<[string, string]> = [
+    ["OKX_TEST_API_KEY", "OKX_API_KEY"],
+    ["OKX_TEST_SECRET_KEY", "OKX_SECRET_KEY"],
+    ["OKX_TEST_PASSPHRASE", "OKX_PASSPHRASE"],
+    ["OKX_TEST_WEBHOOK_SECRET", "OKX_WEBHOOK_SECRET"],
+  ];
+  for (const [fixtureKey, serverKey] of okxFixtureEnv) {
+    if (parentEnv[fixtureKey]) childEnv[serverKey] = parentEnv[fixtureKey];
+  }
+  // The unsafe legacy EIP-3009 path is disabled by default. Only its explicit,
+  // non-secret fixture flag may cross this hermetic boundary for regression tests.
+  if (parentEnv.OKX_LEGACY_EIP3009_ENABLED === "true") {
+    childEnv.OKX_LEGACY_EIP3009_ENABLED = "true";
+  }
   // Opt-in live Local VM fixture: keep the temporary home and fake engine,
   // granting only the explicitly selected machine connection and static UI.
   if (localVm) Object.assign(childEnv, {
