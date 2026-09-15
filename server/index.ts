@@ -327,6 +327,7 @@ import { OkxRecurringEngine, OkxTreasuryManager } from "./okx/scheduler.ts";
 import { OkxWebhookJournal } from "./okx/journal.ts";
 import { OkxMarketplaceIntelligence, verifyEip3009Payment } from "./okx/intelligence.ts";
 import { OkxDisputeEvaluator } from "./okx/evaluator.ts";
+import { X402_TESTNET_RESOURCE_PATH, X402TestnetResource } from "./okx/x402-testnet.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime } from "./browser-runtime.ts";
@@ -6102,6 +6103,15 @@ const okxIntelligence = new OkxMarketplaceIntelligence({
   storageFile: join(DATA_DIR, "okx-intelligence.json"),
   queryFeeUsdt: 0.05,
 });
+const okxX402Testnet = new X402TestnetResource({
+  enabled: process.env.OKX_X402_TESTNET_ENABLED === "true",
+  apiKey: process.env.OKX_API_KEY?.trim(),
+  secretKey: process.env.OKX_SECRET_KEY?.trim(),
+  passphrase: process.env.OKX_PASSPHRASE?.trim(),
+  payTo: process.env.OKX_X402_TESTNET_PAY_TO?.trim(),
+  resourceUrl: process.env.OKX_X402_TESTNET_RESOURCE_URL?.trim(),
+  price: process.env.OKX_X402_TESTNET_PRICE?.trim(),
+});
 const okxEvaluator = new OkxDisputeEvaluator({
   storageFile: join(DATA_DIR, "okx-evaluator.json"),
 });
@@ -10022,6 +10032,75 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           id: null,
           error: { code: -32603, message },
         });
+      }
+    }
+
+    // Official x402 implementation: testnet-only and disabled by default.
+    // This route cannot construct a facilitator client or issue a payment
+    // challenge unless all server-only settings and the explicit flag exist.
+    if (method === "POST" && path === X402_TESTNET_RESOURCE_PATH) {
+      const status = okxX402Testnet.status();
+      if (!status.enabled) {
+        return json(res, 404, { error: "x402 testnet is disabled" });
+      }
+      if (!status.ready) {
+        return json(res, 503, { error: status.reason });
+      }
+
+      try {
+        const rawBody = await readRawBody(req);
+        let parsedBody: unknown = undefined;
+        if (rawBody) {
+          try {
+            parsedBody = JSON.parse(rawBody);
+          } catch {
+            return json(res, 400, { error: "x402 testnet resource expects a JSON request body" });
+          }
+        }
+        const adapter = {
+          getHeader: (name: string) => {
+            const value = req.headers[name.toLowerCase()];
+            return Array.isArray(value) ? value[0] : value;
+          },
+          getMethod: () => method,
+          getPath: () => path,
+          getUrl: () => process.env.OKX_X402_TESTNET_RESOURCE_URL?.trim() || path,
+          getAcceptHeader: () => String(req.headers.accept ?? ""),
+          getUserAgent: () => String(req.headers["user-agent"] ?? ""),
+          getBody: () => parsedBody,
+        };
+        const processed = await okxX402Testnet.process(adapter);
+        if (processed.type === "payment-error") {
+          for (const [name, value] of Object.entries(processed.response.headers)) res.setHeader(name, value);
+          return json(res, processed.response.status, processed.response.body ?? {});
+        }
+        if (processed.type !== "payment-verified") {
+          return json(res, 500, { error: "x402 testnet route did not require payment" });
+        }
+
+        const resource = {
+          mode: "x402-testnet",
+          network: "eip155:1952",
+          provenance: "kind-meitner local registry and public OKX.AI setup guidance",
+          data: { benchmarks: okxIntelligence.getCategoryBenchmarks() },
+        };
+        const settlement = await okxX402Testnet.settle(adapter, processed, Buffer.from(JSON.stringify(resource)));
+        if (!settlement.success) {
+          for (const [name, value] of Object.entries(settlement.response.headers)) res.setHeader(name, value);
+          return json(res, settlement.response.status, settlement.response.body ?? {});
+        }
+        for (const [name, value] of Object.entries(settlement.headers)) res.setHeader(name, value);
+        return json(res, 200, {
+          ...resource,
+          settlement: {
+            status: settlement.status,
+            transaction: settlement.transaction,
+            network: settlement.network,
+            amount: settlement.amount,
+          },
+        });
+      } catch (err) {
+        return json(res, 502, { error: `x402 testnet processing failed: ${String(err)}` });
       }
     }
 
