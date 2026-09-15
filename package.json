@@ -85,6 +85,8 @@
   "dependencies": {
     "@clack/prompts": "1.7.0",
     "@hpke/core": "1.9.0",
+    "@okxweb3/x402-core": "0.1.0",
+    "@okxweb3/x402-evm": "0.2.1",
     "@trycua/cua-driver": "0.22.1",
     "clsx": "^2.1.1",
     "croner": "10.0.1",

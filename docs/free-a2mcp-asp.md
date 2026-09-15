@@ -92,5 +92,11 @@ Official references:
 
 ## Explicitly deferred
 
-- Official x402 integration is a separate **X Layer testnet** follow-up, not a fallback inside this route.
+### Official x402 testnet follow-up
+
+The optional paid test route is `POST /api/okx/x402-testnet/market-intelligence`. It uses the official `@okxweb3/x402-core` and `@okxweb3/x402-evm` server APIs with `ExactEvmScheme`, is fixed to X Layer testnet `eip155:1952`, and is **disabled by default**. With the flag absent it returns `404`, does not initialize a facilitator, and never emits a payment challenge.
+
+A reviewer must explicitly set all of the following Railway service-scoped sealed variables before a testnet exercise: `OKX_X402_TESTNET_ENABLED=true`, `OKX_API_KEY`, `OKX_SECRET_KEY`, `OKX_PASSPHRASE`, `OKX_X402_TESTNET_PAY_TO`, and `OKX_X402_TESTNET_RESOURCE_URL`. Optional `OKX_X402_TESTNET_PRICE` defaults to `$0.01`. Only after those settings are reviewed may an operator use official testnet faucet assets to confirm the `402` / `PAYMENT-REQUIRED` / `PAYMENT-RESPONSE` flow. Never set this flag or use those assets for a normal deployment.
+
+- Official x402 integration is a separate **X Layer testnet** follow-up, not a fallback inside this free route.
 - Any real payment, mainnet configuration, A2A escrow, evaluator operation, API credential, wallet, signer, or on-chain claim requires its own security/readiness review.
