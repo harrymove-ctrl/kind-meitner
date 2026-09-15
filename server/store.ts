@@ -27,6 +27,7 @@ import type { RoutineRequestCardData } from "../shared/routine-request.ts";
 import type { RoutineRunCardData } from "../shared/routine-run.ts";
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
+import type { OkxImportDescriptor } from "./okx/agent-import.ts";
 
 export type MausColor =
   | "green"
@@ -46,6 +47,44 @@ export type MausColor =
  * vocabulary still carry those names, and the client resolves both on read.
  */
 export type MausExpression = string;
+
+function isOkxImportDescriptor(value: unknown): value is OkxImportDescriptor {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Partial<OkxImportDescriptor>;
+  return source.kind === "okx-mock" &&
+    typeof source.externalAgentId === "string" && source.externalAgentId.length > 0 && source.externalAgentId.length <= 120 &&
+    source.provider === "OKX.ai" &&
+    Array.isArray(source.capabilities) && source.capabilities.length > 0 && source.capabilities.length <= 2 &&
+    source.capabilities.every((capability) => capability === "chat" || capability === "market-intelligence");
+}
+
+/** Imported marketplace personas are deliberately inert. This runs on load
+ * too, so a process crash or hand-edited bots.json cannot revive access. */
+function lockOkxImportedBot(bot: BotRecord): boolean {
+  if (!isOkxImportDescriptor(bot.okxImport)) {
+    if (bot.okxImport !== undefined) {
+      delete bot.okxImport;
+      return true;
+    }
+    return false;
+  }
+  let changed = false;
+  const set = <K extends keyof BotRecord>(key: K, value: BotRecord[K]) => {
+    if (JSON.stringify(bot[key]) !== JSON.stringify(value)) {
+      bot[key] = value;
+      changed = true;
+    }
+  };
+  set("composio", false);
+  set("approvalMode", "ask");
+  set("autoApprove", false);
+  set("alwaysAllow", []);
+  set("mcpServers", []);
+  set("browser", false);
+  set("computer", "off");
+  set("peers", []);
+  return changed;
+}
 
 export interface OptionCardData {
   title: string;
@@ -153,7 +192,7 @@ export interface Message {
    * something — the UI offers setup instead of a retry that cannot work.
    * `summary` is the call's input on one redacted line (the shell command)
    * where the driver only names the tool in `name`. */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; summary?: string; input?: string; output?: string };
+  tool?: { name: string; ok?: boolean; /** A room lifecycle receipt, not a hidden ordinary tool step. */ system?: boolean; spoken?: string; setup?: boolean; summary?: string; input?: string; output?: string };
   /** user messages sent INTO a running turn (capabilities.queueing): the
    * model saw it mid-turn, so the transcript marks it — a reader should
    * know the reply above it may already account for this line */
@@ -729,6 +768,10 @@ export interface BotRecord {
   /** Listing provenance and connector intent retained for package details
    * and future re-export. It never means the apps are authorized. */
   installedPackage?: InstalledPackageMetadata;
+  /** Durable, display-only provenance for a mock OKX marketplace import.
+   * Its presence never grants remote access, connected apps, credentials, or
+   * approval elevation. */
+  okxImport?: OkxImportDescriptor;
   /** Aggregate of task and room activity. Change through setTaskActivity()
    * or the legacy setActivity() room slot, never directly. */
   busy?: boolean;
@@ -956,6 +999,7 @@ export class Store {
         delete b.approvalGrant;
         botsMigrated = true;
       }
+      if (lockOkxImportedBot(b)) botsMigrated = true;
       const avatar = botAvatarProfile(b);
       if (b.avatarUrl !== undefined && avatar.avatarUrl !== b.avatarUrl) {
         delete b.avatarUrl;

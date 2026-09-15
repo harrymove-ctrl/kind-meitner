@@ -327,6 +327,7 @@ import { OkxRecurringEngine, OkxTreasuryManager } from "./okx/scheduler.ts";
 import { OkxWebhookJournal } from "./okx/journal.ts";
 import { OkxMarketplaceIntelligence, verifyEip3009Payment } from "./okx/intelligence.ts";
 import { OkxDisputeEvaluator } from "./okx/evaluator.ts";
+import { findMockOkxAgent, listMockOkxAgents, mockOkxImportDescriptor } from "./okx/agent-import.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime } from "./browser-runtime.ts";
@@ -2241,6 +2242,126 @@ function createChannel(value: unknown): GroupRecord {
   return store.createGroup(name, memberIds, false, section, setup);
 }
 
+const DEFAULT_ROOM_NAME = "Channel 1";
+const defaultRoomWelcome = `Welcome to #${DEFAULT_ROOM_NAME}.`;
+
+function roomActivity(room: GroupRecord, text: string, from?: BotRecord): Message {
+  const existing = store.messagesFor(room.threadId).find(
+    (message) => message.kind === "activity" && message.tool?.name === text,
+  );
+  if (existing) {
+    const tool = existing.tool;
+    if (!tool || tool.system === true) return existing;
+    return store.patchMessage(room.threadId, existing.id, {
+      tool: { ...tool, system: true },
+    }) ?? existing;
+  }
+  return store.appendMessage(room.threadId, {
+    role: "bot",
+    kind: "activity",
+    tool: { name: text, ok: true, system: true },
+    ...(from ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
+  });
+}
+
+/** Upgrade activity records created before room lifecycle receipts were made
+ * visible by default. Only exact durable welcome/import receipts qualify, so
+ * ordinary successful tool activity remains hidden unless the user opts in. */
+function migrateSystemRoomActivities(): void {
+  for (const room of store.groups) {
+    const lifecycleNames = new Set<string>();
+    if (room.name === DEFAULT_ROOM_NAME) lifecycleNames.add(defaultRoomWelcome);
+    for (const bot of store.bots) {
+      if (!bot.okxImport || !room.memberIds.includes(bot.id)) continue;
+      lifecycleNames.add(`${bot.name} joined #${room.name} from ${bot.okxImport.provider} (mock).`);
+    }
+    for (const message of store.messagesFor(room.threadId)) {
+      if (message.kind !== "activity" || !message.tool || message.tool.system === true || !lifecycleNames.has(message.tool.name)) continue;
+      store.patchMessage(room.threadId, message.id, { tool: { ...message.tool, system: true } });
+    }
+  }
+}
+
+/** One workspace onboarding room. Local bots are trusted only as local
+ * workspace records; imported mock agents never become the seed member. */
+function ensureDefaultRoom(): { room: GroupRecord; welcome: Message } {
+  const seed = store.bots.find((bot) => !bot.hidden && !bot.okxImport);
+  let room = store.groups.find((group) => !group.dm && group.name === DEFAULT_ROOM_NAME);
+  if (!room) {
+    room = store.createGroup(
+      DEFAULT_ROOM_NAME,
+      seed ? [seed.id] : [],
+      false,
+      undefined,
+      { bulletin: "", defaultResponder: seed ? { kind: "member", botId: seed.id } : { kind: "mentions" }, completed: true },
+    );
+  } else if (seed && !room.memberIds.includes(seed.id)) {
+    room = store.patchGroup(room.id, { memberIds: [...room.memberIds, seed.id] }) ?? room;
+  }
+  return { room, welcome: roomActivity(room, defaultRoomWelcome) };
+}
+
+function okxImportResult(bot: BotRecord, room: GroupRecord, activity: Message) {
+  return {
+    agent: {
+      id: bot.id,
+      name: bot.name,
+      source: bot.okxImport,
+    },
+    room: { id: room.id },
+    activityMessageId: activity.id,
+  };
+}
+
+/** Import is keyed by durable external-agent provenance plus room membership,
+ * not the client request id, so it remains idempotent after a restart. */
+function importMockOkxAgent(value: unknown): { created: boolean; result: ReturnType<typeof okxImportResult> } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new Error("import body must be a JSON object"), { status: 400 });
+  }
+  const body = value as Record<string, unknown>;
+  if (typeof body.agentId !== "string" || !body.agentId.trim()) {
+    throw Object.assign(new Error("agentId is required"), { status: 400 });
+  }
+  if (typeof body.roomId !== "string" || !body.roomId.trim()) {
+    throw Object.assign(new Error("roomId is required"), { status: 400 });
+  }
+  if (typeof body.requestId !== "string" || !body.requestId.trim() || body.requestId.length > 200) {
+    throw Object.assign(new Error("requestId is required"), { status: 400 });
+  }
+  const agent = findMockOkxAgent(body.agentId.trim());
+  if (!agent) throw Object.assign(new Error("unknown OKX agent"), { status: 404 });
+  let room = store.group(body.roomId.trim());
+  if (!room) throw Object.assign(new Error("no such room"), { status: 404 });
+  if (room.dm) throw Object.assign(new Error("OKX agents can only join non-DM rooms"), { status: 400 });
+
+  let bot = store.bots.find(
+    (candidate) => candidate.okxImport?.externalAgentId === agent.id && room!.memberIds.includes(candidate.id),
+  );
+  let created = false;
+  if (!bot) {
+    bot = store.createBot(
+      { name: agent.name, title: "OKX.ai mock", description: agent.description },
+      { seedMessages: false },
+    );
+    store.patchBot(bot.id, {
+      okxImport: mockOkxImportDescriptor(agent),
+      composio: false,
+      approvalMode: "ask",
+      autoApprove: false,
+      alwaysAllow: [],
+      mcpServers: [],
+      browser: false,
+      computer: "off",
+      peers: [],
+    });
+    room = store.patchGroup(room.id, { memberIds: [...room.memberIds, bot.id] }) ?? room;
+    created = true;
+  }
+  const activity = roomActivity(room, `${agent.name} joined #${room.name} from ${agent.provider} (mock).`, bot);
+  return { created, result: okxImportResult(bot, room, activity) };
+}
+
 function updateChannel(groupId: string, value: unknown): GroupRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw Object.assign(new Error("body must be a JSON object"), { status: 400 });
@@ -3063,6 +3184,10 @@ function broadcast(payload: Record<string, unknown>) {
   }
 }
 onSteeredQueueChange(() => broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() }));
+
+// Store mutation listeners were registered earlier; run migration only after
+// the SSE sequence state exists so any upgraded receipt uses message.patch.
+migrateSystemRoomActivities();
 
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
 // The canonical stream is the source of truth; the persisted transcript
@@ -9788,6 +9913,95 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, status, { error: message });
       }
     }
+    // Pre-Auth Free A2MCP resource server. This is deliberately separate from
+    // the legacy paid endpoint: no wallet, payment header, nonce, key, or
+    // mainnet operation is accepted here.
+    if (method === "POST" && path === "/api/okx/free-mcp") {
+      const startTime = Date.now();
+      const connectId = (req.headers["x-connect-id"] as string) || randomUUID();
+      res.setHeader("x-connect-id", connectId);
+      const rateCheck = checkOkxMcpRateLimit(`free:${requestSource(req)}`, 60, 60_000);
+      if (!rateCheck.allowed) {
+        res.setHeader("retry-after", String(rateCheck.retryAfter));
+        res.setHeader("x-time-to-session", String(Date.now() - startTime));
+        return json(res, 429, {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32000, message: "Too many requests: Rate limit exceeded" },
+        });
+      }
+
+      try {
+        const rawBody = await readRawBody(req);
+        let rpc: any;
+        try {
+          rpc = JSON.parse(rawBody);
+        } catch {
+          res.setHeader("x-time-to-session", String(Date.now() - startTime));
+          return json(res, 400, {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: "Parse error: Invalid JSON" },
+          });
+        }
+
+        const id = rpc?.id ?? null;
+        if (rpc?.method === "ping" || rpc?.method === "initialize") {
+          res.setHeader("x-time-to-session", String(Date.now() - startTime));
+          return json(res, 200, {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              protocolVersion: "2024-11-05",
+              capabilities: { tools: {} },
+              serverInfo: { name: "kind-meitner-free-okx-ai", version: "1.0.0" },
+              instructions: "Free read-only OKX.AI resources. No payment, wallet, API key, or mainnet access is used.",
+            },
+          });
+        }
+
+        if (rpc?.method === "tools/list") {
+          res.setHeader("x-time-to-session", String(Date.now() - startTime));
+          return json(res, 200, {
+            jsonrpc: "2.0",
+            id,
+            result: { tools: okxIntelligence.getFreeToolDeclarations() },
+          });
+        }
+
+        if (rpc?.method === "tools/call") {
+          const toolName = rpc.params?.name;
+          const rawArgs = rpc.params?.arguments ?? {};
+          if (typeof toolName !== "string" || !toolName.trim() || !rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) {
+            res.setHeader("x-time-to-session", String(Date.now() - startTime));
+            return json(res, 400, {
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32602, message: "tools/call requires a tool name and an object arguments value" },
+            });
+          }
+          const result = okxIntelligence.handleFreeMcpToolCall(toolName, rawArgs as Record<string, unknown>);
+          res.setHeader("x-time-to-session", String(Date.now() - startTime));
+          return json(res, 200, { jsonrpc: "2.0", id, result });
+        }
+
+        res.setHeader("x-time-to-session", String(Date.now() - startTime));
+        return json(res, 400, {
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32601, message: `Method not found: ${String(rpc?.method ?? "")}` },
+        });
+      } catch (err) {
+        res.setHeader("x-time-to-session", String(Date.now() - startTime));
+        const message = err instanceof Error ? err.message : String(err);
+        return json(res, 500, {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32603, message },
+        });
+      }
+    }
+
     // Pre-Auth A2MCP Tool Server Ingress (EIP-3009 Gasless Micro-Payments & Zero-Slow-UX Tracing)
     if (method === "POST" && path === "/api/okx/mcp") {
       const startTime = Date.now();
@@ -9912,95 +10126,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           error: { code: isTimeout ? -32000 : -32603, message },
         });
       }
-    // Pre-Auth Free A2MCP resource server. This is deliberately separate from
-    // the legacy paid endpoint: no wallet, payment header, nonce, key, or
-    // mainnet operation is accepted here.
-    if (method === "POST" && path === "/api/okx/free-mcp") {
-      const startTime = Date.now();
-      const connectId = (req.headers["x-connect-id"] as string) || randomUUID();
-      res.setHeader("x-connect-id", connectId);
-      const rateCheck = checkOkxMcpRateLimit(`free:${requestSource(req)}`, 60, 60_000);
-      if (!rateCheck.allowed) {
-        res.setHeader("retry-after", String(rateCheck.retryAfter));
-        res.setHeader("x-time-to-session", String(Date.now() - startTime));
-        return json(res, 429, {
-          jsonrpc: "2.0",
-          id: null,
-          error: { code: -32000, message: "Too many requests: Rate limit exceeded" },
-        });
-      }
-
-      try {
-        const rawBody = await readRawBody(req);
-        let rpc: any;
-        try {
-          rpc = JSON.parse(rawBody);
-        } catch {
-          res.setHeader("x-time-to-session", String(Date.now() - startTime));
-          return json(res, 400, {
-            jsonrpc: "2.0",
-            id: null,
-            error: { code: -32700, message: "Parse error: Invalid JSON" },
-          });
-        }
-
-        const id = rpc?.id ?? null;
-        if (rpc?.method === "ping" || rpc?.method === "initialize") {
-          res.setHeader("x-time-to-session", String(Date.now() - startTime));
-          return json(res, 200, {
-            jsonrpc: "2.0",
-            id,
-            result: {
-              protocolVersion: "2024-11-05",
-              capabilities: { tools: {} },
-              serverInfo: { name: "kind-meitner-free-okx-ai", version: "1.0.0" },
-              instructions: "Free read-only OKX.AI resources. No payment, wallet, API key, or mainnet access is used.",
-            },
-          });
-        }
-
-        if (rpc?.method === "tools/list") {
-          res.setHeader("x-time-to-session", String(Date.now() - startTime));
-          return json(res, 200, {
-            jsonrpc: "2.0",
-            id,
-            result: { tools: okxIntelligence.getFreeToolDeclarations() },
-          });
-        }
-
-        if (rpc?.method === "tools/call") {
-          const toolName = rpc.params?.name;
-          const rawArgs = rpc.params?.arguments ?? {};
-          if (typeof toolName !== "string" || !toolName.trim() || !rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) {
-            res.setHeader("x-time-to-session", String(Date.now() - startTime));
-            return json(res, 400, {
-              jsonrpc: "2.0",
-              id,
-              error: { code: -32602, message: "tools/call requires a tool name and an object arguments value" },
-            });
-          }
-          const result = okxIntelligence.handleFreeMcpToolCall(toolName, rawArgs as Record<string, unknown>);
-          res.setHeader("x-time-to-session", String(Date.now() - startTime));
-          return json(res, 200, { jsonrpc: "2.0", id, result });
-        }
-
-        res.setHeader("x-time-to-session", String(Date.now() - startTime));
-        return json(res, 400, {
-          jsonrpc: "2.0",
-          id,
-          error: { code: -32601, message: `Method not found: ${String(rpc?.method ?? "")}` },
-        });
-      } catch (err) {
-        res.setHeader("x-time-to-session", String(Date.now() - startTime));
-        const message = err instanceof Error ? err.message : String(err);
-        return json(res, 500, {
-          jsonrpc: "2.0",
-          id: null,
-          error: { code: -32603, message },
-        });
-      }
-    }
-
     }
     if (!gate.auth) return json(res, gate.status, { error: gate.error });
     const auth = gate.auth;
@@ -12412,6 +12537,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         "content-disposition": `attachment; filename="${filename}.md"`,
       });
       return res.end(lines.join("\n"));
+    }
+
+    // ── OKX mock onboarding (local-only; no wallet or live Portal calls) ──
+    if (method === "GET" && path === "/api/okx/agents") {
+      return json(res, 200, { source: "mock", agents: listMockOkxAgents() });
+    }
+    if (method === "POST" && path === "/api/rooms/default") {
+      const { room, welcome } = ensureDefaultRoom();
+      return json(res, 200, {
+        room: { ...publicGroupState(room), messages: store.messagesFor(room.threadId) },
+        activityMessageId: welcome.id,
+      });
+    }
+    if (method === "POST" && path === "/api/okx/agents/import") {
+      const imported = importMockOkxAgent(await readBody(req));
+      return json(res, imported.created ? 201 : 200, imported.result);
     }
 
     // ── channels (persisted internally as groups) ───────────────────────

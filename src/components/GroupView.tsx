@@ -38,6 +38,7 @@ import { GoalRunCard } from "./GoalRunCard";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
+import { OkxAgentInvite, canInviteOkxAgent } from "./OkxAgentInvite";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -929,6 +930,10 @@ export function GroupView({ group }: { group: Group }) {
     [group.memberIds, state.bots],
   );
   const speaker = members.find((b) => b.id === group.busyBotId);
+  const importedOkxAgentIds = useMemo(
+    () => new Set(members.flatMap((member) => member.okxImport ? [member.okxImport.externalAgentId] : [])),
+    [members],
+  );
   const setupPending = !remoteClient && roomNeedsSetup(group);
 
   // Mascot stays while a member works; the finished reply pops in above it.
@@ -1143,6 +1148,7 @@ export function GroupView({ group }: { group: Group }) {
             isGroup
           />
           <GroupCallButton group={group} members={members} />
+          {canInviteOkxAgent(group, remoteClient) && <OkxAgentInvite roomId={group.id} importedExternalAgentIds={importedOkxAgentIds} />}
           {!remoteClient && !setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
           {!remoteClient && !setupPending && !group.dm && <DefaultResponderSelect group={group} members={members} />}
           {group.dm || remoteClient ? (
